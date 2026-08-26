@@ -64,6 +64,10 @@ if [ "$INSTALL_MODE" = "2" ] || [ "$INSTALL_MODE" = "3" ]; then
     # strip trailing slash, if any
     REMOTE_API_BASE_URL=${REMOTE_API_BASE_URL%/}
   fi
+
+  # ============================================
+  # سوال جدید: آیا پیام آنلاین شدن مجدد ارسال شود؟
+  # ============================================
   echo
   echo -e "${CYAN}Do you want to send restart notification to all users when bot restarts?${NC}"
   echo "This will send a message to all users every time the bot service restarts."
@@ -232,6 +236,11 @@ if [ -n "$DOMAIN_NAME" ]; then
   certbot --nginx --non-interactive --agree-tos -m "$CERTBOT_EMAIL" -d "$DOMAIN_NAME" --redirect || true
 fi
 fi
+
+# ============================================
+# بخش جدید: نمایش وضعیت و آموزش مدیریت سرویس
+# ============================================
+
 FLASK_STATUS="disabled"
 if [ "$RUN_FLASK" = "true" ]; then
   FLASK_STATUS=$(systemctl is-active flask.service || true)
@@ -274,6 +283,7 @@ else
   echo -e "${YELLOW}Telegram Bot: DISABLED${NC}"
 fi
 
+# نمایش وضعیت ارسال پیام آنلاین شدن
 if [ "$RUN_BOT" = "true" ]; then
   if [ "$SEND_RESTART_MSG" = "true" ]; then
     echo -e "${GREEN}Restart Notifications: ENABLED${NC}"
@@ -296,6 +306,9 @@ fi
 echo -e "${CYAN}_________________________________${NC}"
 echo -e "${CYAN}_________________________________${NC}"
 
+# ============================================
+# راهنمای مدیریت سرویس‌ها
+# ============================================
 echo -e "\n${CYAN}================== MANAGEMENT GUIDE ==================${NC}"
 echo -e "${YELLOW}To check service status:${NC}"
 if [ "$RUN_FLASK" = "true" ]; then
@@ -329,6 +342,9 @@ if [ "$RUN_BOT" = "true" ]; then
   echo "  journalctl -u telegram-bot.service -f"
 fi
 
+# ============================================
+# نمایش تنظیمات مربوط به پیام آنلاین شدن
+# ============================================
 if [ "$RUN_BOT" = "true" ]; then
   echo -e "\n${CYAN}================== RESTART NOTIFICATION SETTINGS ==================${NC}"
   echo -e "${YELLOW}To enable/disable restart notifications later:${NC}"
@@ -343,10 +359,8 @@ fi
 if [ "$RUN_BOT" = "true" ]; then
   echo -e "\n${CYAN}================== SWITCHING FLASK SERVERS FROM THE BOT ==================${NC}"
   echo -e "${YELLOW}As the admin (ADMIN_CHAT_ID), you can change which Flask API the bot uses at any time, without reinstalling:${NC}"
-  echo "  /setapi https://iran.heysolo.ir/api/forex   # switch directly to a URL"
-  echo "  /addserver iran https://iran.heysolo.ir/api/forex   # save a server under a name"
-  echo "  /servers                                     # list saved servers with buttons to switch"
-  echo "  /delserver iran                              # remove a saved server"
+  echo "  /admin   → open the button-based panel to switch, add, or delete Flask servers"
+  echo "  /myid    → shows your chat ID (useful for setting ADMIN_CHAT_ID)"
   echo -e "${YELLOW}Current API base URL for this bot:${NC} $API_BASE_URL"
 fi
 
