@@ -53,9 +53,7 @@ if [ "$INSTALL_MODE" = "2" ] || [ "$INSTALL_MODE" = "3" ]; then
   ADMIN_CHAT_ID=${ADMIN_CHAT_ID:-0}
 
   if [ "$INSTALL_MODE" = "3" ]; then
-    # ============================================
-    # حالت «فقط ربات»: آدرس Flask API که روی سرور دیگری اجراست
-    # ============================================
+    # Bot-only mode: ask for the remote Flask API base URL
     echo
     echo -e "${CYAN}This bot will NOT run its own Flask API — it needs the full API base URL of a Flask server running elsewhere.${NC}"
     echo "Example: https://iran.heysolo.ir/api/forex  (or http://SERVER_IP:45869/api/forex)"
@@ -63,13 +61,9 @@ if [ "$INSTALL_MODE" = "2" ] || [ "$INSTALL_MODE" = "3" ]; then
     while [ -z "$REMOTE_API_BASE_URL" ]; do
       read -p "This is required. Enter the remote Flask API base URL: " REMOTE_API_BASE_URL
     done
-    # حذف اسلش انتهایی در صورت وجود
+    # strip trailing slash, if any
     REMOTE_API_BASE_URL=${REMOTE_API_BASE_URL%/}
   fi
-
-  # ============================================
-  # سوال جدید: آیا پیام آنلاین شدن مجدد ارسال شود؟
-  # ============================================
   echo
   echo -e "${CYAN}Do you want to send restart notification to all users when bot restarts?${NC}"
   echo "This will send a message to all users every time the bot service restarts."
@@ -94,7 +88,7 @@ apt update
 if [ "$RUN_FLASK" = "true" ]; then
   apt install -y git python3 python3-venv python3-pip curl nginx
 else
-  # روی سروری که فقط ربات روشه، نیازی به nginx نیست (ربات با polling کار می‌کنه)
+  # No nginx needed on a bot-only server (bot uses polling, not a webhook)
   apt install -y git python3 python3-venv python3-pip curl
 fi
 
@@ -140,9 +134,7 @@ if [ -n "$DOMAIN_NAME" ]; then
   PUBLIC_BASE_URL="https://$DOMAIN_NAME"
 fi
 
-# ============================================
-# ساخت API_BASE_URL: اگه فلاکس همینجاست local، وگرنه آدرس ریموتی که ادمین داد
-# ============================================
+# Local API_BASE_URL if Flask runs here, otherwise the remote URL the admin entered
 if [ "$RUN_FLASK" = "true" ]; then
   API_BASE_URL="http://127.0.0.1:$FLASK_PORT/api/forex"
 else
@@ -240,11 +232,6 @@ if [ -n "$DOMAIN_NAME" ]; then
   certbot --nginx --non-interactive --agree-tos -m "$CERTBOT_EMAIL" -d "$DOMAIN_NAME" --redirect || true
 fi
 fi
-
-# ============================================
-# بخش جدید: نمایش وضعیت و آموزش مدیریت سرویس
-# ============================================
-
 FLASK_STATUS="disabled"
 if [ "$RUN_FLASK" = "true" ]; then
   FLASK_STATUS=$(systemctl is-active flask.service || true)
@@ -287,7 +274,6 @@ else
   echo -e "${YELLOW}Telegram Bot: DISABLED${NC}"
 fi
 
-# نمایش وضعیت ارسال پیام آنلاین شدن
 if [ "$RUN_BOT" = "true" ]; then
   if [ "$SEND_RESTART_MSG" = "true" ]; then
     echo -e "${GREEN}Restart Notifications: ENABLED${NC}"
@@ -310,9 +296,6 @@ fi
 echo -e "${CYAN}_________________________________${NC}"
 echo -e "${CYAN}_________________________________${NC}"
 
-# ============================================
-# راهنمای مدیریت سرویس‌ها
-# ============================================
 echo -e "\n${CYAN}================== MANAGEMENT GUIDE ==================${NC}"
 echo -e "${YELLOW}To check service status:${NC}"
 if [ "$RUN_FLASK" = "true" ]; then
@@ -346,9 +329,6 @@ if [ "$RUN_BOT" = "true" ]; then
   echo "  journalctl -u telegram-bot.service -f"
 fi
 
-# ============================================
-# نمایش تنظیمات مربوط به پیام آنلاین شدن
-# ============================================
 if [ "$RUN_BOT" = "true" ]; then
   echo -e "\n${CYAN}================== RESTART NOTIFICATION SETTINGS ==================${NC}"
   echo -e "${YELLOW}To enable/disable restart notifications later:${NC}"
@@ -359,9 +339,7 @@ if [ "$RUN_BOT" = "true" ]; then
   echo "  systemctl restart telegram-bot.service"
 fi
 
-# ============================================
-# راهنمای سوییچ سرور Flask از داخل خود ربات (چند سرور)
-# ============================================
+# Bot commands for switching the active Flask server
 if [ "$RUN_BOT" = "true" ]; then
   echo -e "\n${CYAN}================== SWITCHING FLASK SERVERS FROM THE BOT ==================${NC}"
   echo -e "${YELLOW}As the admin (ADMIN_CHAT_ID), you can change which Flask API the bot uses at any time, without reinstalling:${NC}"
