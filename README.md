@@ -23,6 +23,7 @@ Sponsor: [@HeySoloATM](https://t.me/HeySoloATM)
 - `install.sh` → Interactive installer
 - `.env` → Runtime configuration
 
+Installed to `/opt/forexfactory-api`.
 ## Quick Install
 
 ```bash
