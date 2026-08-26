@@ -18,6 +18,8 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 from telegram.constants import ChatAction, ParseMode
@@ -499,141 +501,171 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_in
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Error notifying admin: {e}")
-# ───────────────  Admin: switch Flask server  ─────────────
-def build_servers_keyboard() -> InlineKeyboardMarkup:
+# ───────────────  Admin: Flask server panel (/admin)  ─────────────
+ADMIN_AWAIT_ADD_SERVER = "add_server"
+
+def build_admin_menu_text() -> str:
+    return f"⚙️ <b>Admin panel</b>\n\nActive server:\n<code>{API_BASE}</code>"
+
+def build_admin_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔀 Switch server", callback_data="admin_switch")],
+        [InlineKeyboardButton("➕ Add server", callback_data="admin_add")],
+        [InlineKeyboardButton("🗑 Delete server", callback_data="admin_delete")],
+    ])
+
+def build_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_menu")]])
+
+def build_switch_keyboard() -> InlineKeyboardMarkup:
     servers = list_api_servers()
     kb = []
     for name in servers:
         marker = "✅ " if servers[name] == API_BASE else "▫️ "
-        kb.append([InlineKeyboardButton(f"{marker}{name}", callback_data=f"useserver_{name}")])
-    return InlineKeyboardMarkup(kb) if kb else None
+        kb.append([InlineKeyboardButton(f"{marker}{name}", callback_data=f"adminuse_{name}")])
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(kb)
 
-async def setapi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /setapi <url_or_saved_name> — switch the active Flask server."""
-    global API_BASE
+def build_delete_keyboard() -> InlineKeyboardMarkup:
+    servers = list_api_servers()
+    kb = [[InlineKeyboardButton(f"🗑 {name}", callback_data=f"admindel_{name}")] for name in servers]
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(kb)
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /admin — opens the server-management panel (buttons only, no other commands needed)."""
     cid = update.effective_chat.id
     if not is_admin(cid):
         return
-
-    if not context.args:
-        await update.message.reply_text(
-            "استفاده:\n"
-            "<code>/setapi https://iran.heysolo.ir/api/forex</code>\n"
-            "یا اسم یه سرور ذخیره‌شده:\n"
-            "<code>/setapi iran</code>\n\n"
-            f"آدرس فعلی:\n<code>{API_BASE}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    arg = context.args[0].strip()
-    servers = list_api_servers()
-
-    if arg in servers:
-        new_url = servers[arg]
-    elif arg.startswith("http://") or arg.startswith("https://"):
-        new_url = arg.rstrip("/")
-    else:
-        await update.message.reply_text(
-            "❌ ورودی معتبر نیست. یا یه URL کامل با http(s):// بده، یا اسم یه سرور ذخیره‌شده با /servers ببین."
-        )
-        return
-
-    API_BASE = new_url
-    set_config("api_base_url", new_url)
+    context.user_data.pop("awaiting", None)
     await update.message.reply_text(
-        f"✅ سرور Flask فعال عوض شد به:\n<code>{new_url}</code>\n\n"
-        "این تغییر همین الان اعمال شد و بعد از ری‌استارت ربات هم باقی می‌مونه.",
-        parse_mode=ParseMode.HTML
+        build_admin_menu_text(), reply_markup=build_admin_menu_keyboard(), parse_mode=ParseMode.HTML
     )
 
-async def addserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /addserver <name> <url> — save a Flask server under a name."""
-    cid = update.effective_chat.id
-    if not is_admin(cid):
+async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
         return
-
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "استفاده:\n<code>/addserver iran https://iran.heysolo.ir/api/forex</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    name = context.args[0].strip()
-    url = context.args[1].strip().rstrip("/")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        await update.message.reply_text("❌ آدرس باید با http:// یا https:// شروع بشه.")
-        return
-
-    save_api_server(name, url)
-    await update.message.reply_text(
-        f"✅ سرور «{name}» ذخیره شد:\n<code>{url}</code>\n\n"
-        "برای فعال کردنش: <code>/setapi " + name + "</code> یا از /servers استفاده کن.",
-        parse_mode=ParseMode.HTML
+    context.user_data.pop("awaiting", None)
+    await q.answer()
+    await q.message.edit_text(
+        build_admin_menu_text(), reply_markup=build_admin_menu_keyboard(), parse_mode=ParseMode.HTML
     )
 
-async def delserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /delserver <name> — remove a saved server."""
-    cid = update.effective_chat.id
-    if not is_admin(cid):
+async def admin_switch_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
         return
-
-    if not context.args:
-        await update.message.reply_text("استفاده: <code>/delserver iran</code>", parse_mode=ParseMode.HTML)
-        return
-
-    name = context.args[0].strip()
-    if delete_api_server(name):
-        await update.message.reply_text(f"🗑 سرور «{name}» حذف شد.")
-    else:
-        await update.message.reply_text(f"❌ سروری با اسم «{name}» پیدا نشد.")
-
-async def servers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /servers — list saved servers with quick-switch buttons."""
-    cid = update.effective_chat.id
-    if not is_admin(cid):
-        return
-
+    await q.answer()
     servers = list_api_servers()
-    text = f"📡 سرور فعال فعلی:\n<code>{API_BASE}</code>\n\n"
     if not servers:
-        text += (
-            "هنوز سروری ذخیره نکردی. با این دستور اضافه کن:\n"
-            "<code>/addserver iran https://iran.heysolo.ir/api/forex</code>"
+        await q.message.edit_text(
+            f"{build_admin_menu_text()}\n\nNo saved servers yet — use ➕ Add server first.",
+            reply_markup=build_back_keyboard(), parse_mode=ParseMode.HTML
         )
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         return
+    await q.message.edit_text(
+        f"{build_admin_menu_text()}\n\nTap a server to switch to it:",
+        reply_markup=build_switch_keyboard(), parse_mode=ParseMode.HTML
+    )
 
-    text += "سرورهای ذخیره‌شده (برای سوییچ روش بزن):"
-    await update.message.reply_text(text, reply_markup=build_servers_keyboard(), parse_mode=ParseMode.HTML)
-
-async def use_server_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline button handler for quick server switching."""
+async def admin_use_server_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global API_BASE
     q = update.callback_query
-    cid = q.message.chat.id
-    if not is_admin(cid):
-        await q.answer("فقط ادمین می‌تونه این کارو بکنه.", show_alert=True)
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
         return
-
     name = q.data.split("_", 1)[1]
     servers = list_api_servers()
     if name not in servers:
-        await q.answer("این سرور دیگه وجود نداره.", show_alert=True)
+        await q.answer("That server no longer exists.", show_alert=True)
         return
-
     API_BASE = servers[name]
     set_config("api_base_url", API_BASE)
-    await q.answer(f"✅ سوییچ شد به {name}")
+    await q.answer(f"Switched to {name}")
     await q.message.edit_text(
-        f"📡 سرور فعال فعلی:\n<code>{API_BASE}</code>\n\nسرورهای ذخیره‌شده (برای سوییچ روش بزن):",
-        reply_markup=build_servers_keyboard(),
-        parse_mode=ParseMode.HTML
+        f"{build_admin_menu_text()}\n\nTap a server to switch to it:",
+        reply_markup=build_switch_keyboard(), parse_mode=ParseMode.HTML
+    )
+
+async def admin_delete_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
+        return
+    await q.answer()
+    servers = list_api_servers()
+    if not servers:
+        await q.message.edit_text(
+            f"{build_admin_menu_text()}\n\nNo saved servers to delete.",
+            reply_markup=build_back_keyboard(), parse_mode=ParseMode.HTML
+        )
+        return
+    await q.message.edit_text(
+        f"{build_admin_menu_text()}\n\nTap a server to delete it:",
+        reply_markup=build_delete_keyboard(), parse_mode=ParseMode.HTML
+    )
+
+async def admin_delete_server_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
+        return
+    name = q.data.split("_", 1)[1]
+    deleted = delete_api_server(name)
+    await q.answer(f"Deleted {name}" if deleted else "Not found")
+    servers = list_api_servers()
+    if not servers:
+        await q.message.edit_text(
+            f"{build_admin_menu_text()}\n\nNo saved servers left.",
+            reply_markup=build_back_keyboard(), parse_mode=ParseMode.HTML
+        )
+        return
+    await q.message.edit_text(
+        f"{build_admin_menu_text()}\n\nTap a server to delete it:",
+        reply_markup=build_delete_keyboard(), parse_mode=ParseMode.HTML
+    )
+
+async def admin_add_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.message.chat.id):
+        await q.answer("Admins only.", show_alert=True)
+        return
+    await q.answer()
+    context.user_data["awaiting"] = ADMIN_AWAIT_ADD_SERVER
+    await q.message.edit_text(
+        f"{build_admin_menu_text()}\n\n"
+        "Send the new server as a single message:\n<code>name https://url</code>\n\n"
+        "Example:\n<code>iran https://iran.heysolo.ir/api/forex</code>",
+        reply_markup=build_back_keyboard(), parse_mode=ParseMode.HTML
+    )
+
+async def admin_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catches the admin's reply after tapping ➕ Add server in the /admin panel."""
+    cid = update.effective_chat.id
+    if not is_admin(cid) or context.user_data.get("awaiting") != ADMIN_AWAIT_ADD_SERVER:
+        return
+    context.user_data.pop("awaiting", None)
+
+    parts = update.message.text.strip().split(maxsplit=1)
+    if len(parts) != 2 or not (parts[1].startswith("http://") or parts[1].startswith("https://")):
+        await update.message.reply_text(
+            "❌ Format not recognized. Open /admin again and send:\n<code>name https://url</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    name, url = parts[0], parts[1].rstrip("/")
+    save_api_server(name, url)
+    await update.message.reply_text(
+        f"✅ Saved server «{name}»:\n<code>{url}</code>",
+        reply_markup=build_admin_menu_keyboard(), parse_mode=ParseMode.HTML
     )
 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """چت‌آیدی رو برمی‌گردونه؛ برای ست کردن ADMIN_CHAT_ID توی .env مفیده."""
+    """Returns the chat id — useful for setting ADMIN_CHAT_ID."""
     await update.message.reply_text(f"🆔 Chat ID: <code>{update.effective_chat.id}</code>", parse_mode=ParseMode.HTML)
 
 # ───────────────  Commands  ─────────────
@@ -885,8 +917,23 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, h, m = data.split("_")
         await set_time_handler(update, context, h, m)
         return
-    if data.startswith("useserver_"):
-        await use_server_callback(update, context)
+    if data == "admin_menu":
+        await admin_menu_callback(update, context)
+        return
+    if data == "admin_switch":
+        await admin_switch_menu_callback(update, context)
+        return
+    if data == "admin_add":
+        await admin_add_menu_callback(update, context)
+        return
+    if data == "admin_delete":
+        await admin_delete_menu_callback(update, context)
+        return
+    if data.startswith("adminuse_"):
+        await admin_use_server_callback(update, context)
+        return
+    if data.startswith("admindel_"):
+        await admin_delete_server_callback(update, context)
         return
     await q.answer()
     mapping = {
@@ -1108,13 +1155,12 @@ def main():
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("tomorrow", tomorrow))
     app.add_handler(CommandHandler("week", week))
-    # Admin-only commands for switching the Flask server
-    app.add_handler(CommandHandler("setapi", setapi_cmd))
-    app.add_handler(CommandHandler("addserver", addserver_cmd))
-    app.add_handler(CommandHandler("delserver", delserver_cmd))
-    app.add_handler(CommandHandler("servers", servers_cmd))
+    # Admin-only: single /admin panel for switching the Flask server
+    app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("myid", myid_cmd))
     app.add_handler(CallbackQueryHandler(button_router))
+    # Catches the admin's text reply when adding a server via the /admin panel
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text_input))
     app.job_queue.run_repeating(digest_loop, interval=60, first=0)
     print("🥵 bot is online!")
     app.run_polling()
