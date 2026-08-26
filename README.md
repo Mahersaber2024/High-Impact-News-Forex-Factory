@@ -26,7 +26,7 @@ Sponsor: [@HeySoloATM](https://t.me/HeySoloATM)
 ## Quick Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory-/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory/main/install.sh)
 ```
 
 ## Installer Prompts
@@ -300,7 +300,7 @@ curl -I https://news.example.com/api/forex/today
 To completely remove the application and all installed services:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory-/main/uninstall.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory/main/uninstall.sh)
 ```
 
 The uninstall script will:
