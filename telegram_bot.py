@@ -120,9 +120,8 @@ BASE_DIR   = pathlib.Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "forexbot.db"
 SEND_RESTART_MSG = os.getenv("SEND_RESTART_MSG", "true").lower() == "true"
 
-# API_BASE می‌تونه در زمان اجرا (بدون ری‌استارت) توسط ادمین عوض بشه، چون ممکنه
-# چند سرور Flask روی سرورهای مختلف بالا باشه. مقدار اولیه از دیتابیس خونده میشه
-# (اگه قبلاً ادمین چیزی ست کرده باشه) وگرنه از API_BASE_URL توی .env میاد.
+# Admin can switch the active Flask server at runtime (see /setapi below).
+# Initial value is loaded from the DB if the admin already set one, else falls back to .env.
 API_BASE = DEFAULT_API_BASE
 
 # ───────────────  DB helpers  ─────────────
@@ -156,7 +155,7 @@ def ensure_db():
         );"""
     )
 
-    # تنظیمات کلی ربات (key/value) - از جمله آدرس فعلی Flask API
+    # Key/value bot settings, including the active Flask API URL
     cur.execute(
         """CREATE TABLE IF NOT EXISTS bot_config (
                key   TEXT PRIMARY KEY,
@@ -164,7 +163,7 @@ def ensure_db():
         );"""
     )
 
-    # سرورهای Flask ذخیره‌شده توسط ادمین (چند سرور با اسم دلخواه)
+    # Named Flask servers saved by the admin
     cur.execute(
         """CREATE TABLE IF NOT EXISTS api_servers (
                name TEXT PRIMARY KEY,
@@ -208,7 +207,7 @@ def set_config(key: str, value: str):
     conn.close()
 
 def load_api_base_from_db():
-    """موقع استارت ربات، آخرین آدرسی که ادمین ست کرده رو لود کن (اگه بوده)."""
+    """Load the admin's last saved API_BASE on startup, if any."""
     global API_BASE
     saved = get_config("api_base_url")
     if saved:
@@ -500,7 +499,7 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_in
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Error notifying admin: {e}")
-# ───────────────  Admin: انتخاب سرور Flask  ─────────────
+# ───────────────  Admin: switch Flask server  ─────────────
 def build_servers_keyboard() -> InlineKeyboardMarkup:
     servers = list_api_servers()
     kb = []
@@ -510,7 +509,7 @@ def build_servers_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb) if kb else None
 
 async def setapi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ادمین: /setapi <url_or_saved_name> — سرور Flask فعال رو مستقیم عوض می‌کنه."""
+    """Admin: /setapi <url_or_saved_name> — switch the active Flask server."""
     global API_BASE
     cid = update.effective_chat.id
     if not is_admin(cid):
@@ -549,7 +548,7 @@ async def setapi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def addserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ادمین: /addserver <name> <url> — یه سرور Flask رو با یه اسم ذخیره می‌کنه."""
+    """Admin: /addserver <name> <url> — save a Flask server under a name."""
     cid = update.effective_chat.id
     if not is_admin(cid):
         return
@@ -575,7 +574,7 @@ async def addserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def delserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ادمین: /delserver <name> — یه سرور ذخیره‌شده رو حذف می‌کنه."""
+    """Admin: /delserver <name> — remove a saved server."""
     cid = update.effective_chat.id
     if not is_admin(cid):
         return
@@ -591,7 +590,7 @@ async def delserver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ سروری با اسم «{name}» پیدا نشد.")
 
 async def servers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ادمین: /servers — لیست سرورهای Flask ذخیره‌شده با دکمه برای سوییچ سریع."""
+    """Admin: /servers — list saved servers with quick-switch buttons."""
     cid = update.effective_chat.id
     if not is_admin(cid):
         return
@@ -610,7 +609,7 @@ async def servers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=build_servers_keyboard(), parse_mode=ParseMode.HTML)
 
 async def use_server_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """هندلر دکمه‌های inline برای سوییچ سریع سرور Flask."""
+    """Inline button handler for quick server switching."""
     global API_BASE
     q = update.callback_query
     cid = q.message.chat.id
@@ -1094,7 +1093,7 @@ async def post_init(application):
 
 def main():
     ensure_db()
-    load_api_base_from_db()  # اگه ادمین قبلاً سرور دیگه‌ای ست کرده بود، همونو استفاده کن
+    load_api_base_from_db()  # use admin's saved server, if any
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -1109,7 +1108,7 @@ def main():
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("tomorrow", tomorrow))
     app.add_handler(CommandHandler("week", week))
-    # دستورات مخصوص ادمین برای انتخاب/سوییچ سرور Flask
+    # Admin-only commands for switching the Flask server
     app.add_handler(CommandHandler("setapi", setapi_cmd))
     app.add_handler(CommandHandler("addserver", addserver_cmd))
     app.add_handler(CommandHandler("delserver", delserver_cmd))
