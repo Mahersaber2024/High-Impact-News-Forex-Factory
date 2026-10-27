@@ -1,5 +1,5 @@
 """
-📢 "Send to my channel": a user connects their own channel and the daily digest is posted there
+📢 "Send to my channel": a user connects their own channel and the 📰 Daily High-Impact News is posted there
 instead of in the private chat. The bot must be an admin of the channel (Post Messages).
 """
 from __future__ import annotations
@@ -74,16 +74,15 @@ T = {
                   "۱) ربات {bot} رو به کانالت اضافه کن و <b>ادمین</b> کن (دسترسی «ارسال پیام» لازمه).\n"
                   "۲) بعد آیدی کانال رو بفرست، مثلاً <code>@mychannel</code>\n"
                   "   یا اگه کانال خصوصیه، یه پیام از کانال رو برام فوروارد کن.\n\n"
-                  "از اون به بعد خبرهای روزانه (با همون ارزها و ساعتی که تنظیم کردی) توی کانالت ارسال میشه."),
-        "current": "📢 کانال فعلی: <b>{ch}</b>\nخبرهای روزانه اونجا ارسال میشه.",
+                  "از اون به بعد 📰 اخبار مهم روزانه‌ت (با همون ارزها و ساعتی که تنظیم کردی) توی کانالت ارسال میشه."),
+        "current": "📢 کانال فعلی: <b>{ch}</b>\n📰 اخبار مهم روزانه اونجا ارسال میشه.",
         "change": "🔄 تغییر کانال", "remove": "❌ قطع اتصال کانال", "cancel": "🔙 بازگشت",
         "not_found": "❌ این کانال رو پیدا نکردم. مطمئن شو {bot} توی کانال ادمینه و آیدی رو درست فرستادی.",
         "not_channel": "❌ این یه کانال نیست. آیدی کانال (مثل @mychannel) رو بفرست.",
         "bot_not_admin": "❌ ربات {bot} هنوز ادمین کانال نیست. اول ادمینش کن (با دسترسی ارسال پیام)، بعد دوباره بفرست.",
         "bot_no_post": "❌ ربات ادمینه ولی دسترسی «ارسال پیام» نداره. این دسترسی رو روشن کن و دوباره بفرست.",
-        "user_not_admin": "❌ فقط ادمین‌های همون کانال می‌تونن وصلش کنن.",
-        "done": "✅ کانال <b>{ch}</b> وصل شد! خبرهای روزانه ساعت <b>{time} NYT</b> اونجا ارسال میشه.",
-        "removed": "✅ کانال جدا شد. خبرهای روزانه دوباره همین‌جا برات میاد.",
+        "done": "✅ کانال <b>{ch}</b> وصل شد! 📰 اخبار مهم روزانه ساعت <b>{time}</b> (به وقت نیویورک) اونجا ارسال میشه.",
+        "removed": "✅ کانال جدا شد. 📰 اخبار مهم روزانه دوباره همین‌جا برات میاد.",
         "send_failed": "⚠️ نتونستم توی کانال <b>{ch}</b> پست بذارم (احتمالاً ربات از کانال حذف شده یا ادمین نیست). "
                        "کانال جدا شد و خبرها از این به بعد همین‌جا میاد. برای وصل دوباره از منو «📢 کانال من» رو بزن.",
     },
@@ -92,16 +91,15 @@ T = {
                   "1) Add {bot} to your channel and make it an <b>admin</b> (it needs “Post messages”).\n"
                   "2) Then send the channel username here, e.g. <code>@mychannel</code>\n"
                   "   or, for a private channel, forward any message from the channel to me.\n\n"
-                  "From then on the daily digest (same currencies and time you set) is posted in your channel."),
-        "current": "📢 Current channel: <b>{ch}</b>\nThe daily digest is posted there.",
+                  "From then on your 📰 Daily High-Impact News (same currencies and time you set) is posted in your channel."),
+        "current": "📢 Current channel: <b>{ch}</b>\nYour 📰 Daily High-Impact News is posted there.",
         "change": "🔄 Change channel", "remove": "❌ Disconnect channel", "cancel": "🔙 Back",
         "not_found": "❌ I can't find that channel. Make sure {bot} is an admin there and the username is right.",
         "not_channel": "❌ That's not a channel. Send the channel username, like @mychannel.",
         "bot_not_admin": "❌ {bot} isn't an admin of that channel yet. Make it admin (with Post messages) and send it again.",
         "bot_no_post": "❌ The bot is admin but can't post messages. Enable “Post messages” and send it again.",
-        "user_not_admin": "❌ Only admins of that channel can connect it.",
-        "done": "✅ Channel <b>{ch}</b> connected! The daily digest will be posted there at <b>{time} NYT</b>.",
-        "removed": "✅ Channel disconnected. The daily digest comes here again.",
+        "done": "✅ Channel <b>{ch}</b> connected! Your 📰 Daily High-Impact News will be posted there at <b>{time}</b> (New York time).",
+        "removed": "✅ Channel disconnected. Your 📰 Daily High-Impact News comes here again.",
         "send_failed": "⚠️ I couldn't post in your channel <b>{ch}</b> (the bot was probably removed or isn't admin). "
                        "It's disconnected now and the news comes here. Tap “📢 My channel” in the menu to connect again.",
     },
@@ -198,19 +196,10 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, language: s
     if me.status == ChatMemberStatus.ADMINISTRATOR and getattr(me, "can_post_messages", True) is False:
         await msg.reply_text(t["bot_no_post"], parse_mode=ParseMode.HTML)
         return
-    # Only the channel's own admins may connect it (stops people pointing the bot at someone else's channel)
-    try:
-        member = await ctx.bot.get_chat_member(chat.id, update.effective_user.id)
-        is_channel_admin = member.status in ADMIN_STATUSES
-    except TelegramError:
-        is_channel_admin = False
-    if not is_channel_admin:
-        await msg.reply_text(t["user_not_admin"], parse_mode=ParseMode.HTML)
-        return
-
+    # The bot being admin with "Post messages" is the only requirement (no check on the user's own role)
     set_channel(msg.chat.id, chat.id, chat.title or "", chat.username)
     ctx.user_data.pop("awaiting", None)
-    digest_time = subscribe_and_get_time(msg.chat.id)   # connecting a channel turns the digest on
+    digest_time = subscribe_and_get_time(msg.chat.id)   # connecting a channel turns the Daily High-Impact News on
     ch = label({"id": chat.id, "title": chat.title, "username": chat.username})
     await msg.reply_text(t["done"].format(ch=ch, time=digest_time), parse_mode=ParseMode.HTML)
 

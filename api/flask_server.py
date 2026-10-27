@@ -7,11 +7,11 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from datetime import datetime, timedelta
 
 import bot_settings as cfg
-from api.forexFactoryScrapper import getRecords, getURL, get_start_of_week
+from api.forexFactoryScrapper import getRecords, getURL, get_start_of_week, ALL_IMPACTS
 
 HOST = cfg.FLASK_HOST
 PORT = cfg.FLASK_PORT
@@ -31,6 +31,18 @@ cache = {
 
 CACHE_DURATION = timedelta(hours=1)  # Cache validity duration for today and tomorrow
 DAILY_UPDATE_HOUR = 0  # Start of day (e.g. 00:00) for refreshing weekly data
+
+def _wanted_impacts() -> set[str]:
+    """?impact=high,medium,low (or all). No parameter = High only, so the EA keeps getting exactly what it always got."""
+    raw = (request.args.get("impact") or "high").lower()
+    if raw == "all":
+        return set(ALL_IMPACTS)
+    wanted = {lvl for lvl in ALL_IMPACTS if lvl.lower() in {p.strip() for p in raw.split(",")}}
+    return wanted or {"High"}
+
+def _respond(records):
+    wanted = _wanted_impacts()
+    return jsonify([r for r in (records or []) if r.get("Impact") in wanted]), 200
 
 def is_cache_valid(last_update, cache_key):
     """Check whether the cached data is still valid."""
@@ -55,15 +67,15 @@ def today_data():
 
     if is_cache_valid(cache["today"]["last_update"], "today"):
         logging.info("Returning cached data for today.")
-        return jsonify(cache["today"]["data"]), 200
+        return _respond(cache["today"]["data"])
 
     logging.info("Fetching new data for today.")
     url = getURL(today, 'day')
-    record_json = getRecords(url, today)
+    record_json = getRecords(url, today, ALL_IMPACTS)
     
     cache["today"] = {"data": record_json, "last_update": datetime.now()}
     
-    return jsonify(record_json), 200
+    return _respond(record_json)
 
 @app.route('/api/forex/weekly', methods=['GET'])
 def weekly_data():
@@ -72,11 +84,11 @@ def weekly_data():
 
     if is_cache_valid(cache["weekly"]["last_update"], "weekly"):
         logging.info("Returning cached data for weekly.")
-        return jsonify(cache["weekly"]["data"]), 200
+        return _respond(cache["weekly"]["data"])
 
     logging.info("Fetching new data for weekly.")
     url = getURL(start_of_week, 'week')
-    record_json = getRecords(url, start_of_week)
+    record_json = getRecords(url, start_of_week, ALL_IMPACTS)
 
     # Update cache with the current day
     cache["weekly"] = {
@@ -85,7 +97,7 @@ def weekly_data():
         "last_day": datetime.now().date()
     }
 
-    return jsonify(record_json), 200
+    return _respond(record_json)
 
 @app.route('/api/forex/tomorrow', methods=['GET'])
 def tomorrow_data():
@@ -93,15 +105,15 @@ def tomorrow_data():
 
     if is_cache_valid(cache["tomorrow"]["last_update"], "tomorrow"):
         logging.info("Returning cached data for tomorrow.")
-        return jsonify(cache["tomorrow"]["data"]), 200
+        return _respond(cache["tomorrow"]["data"])
 
     logging.info("Fetching new data for tomorrow.")
     url = getURL(tomorrow, 'day')
-    record_json = getRecords(url, tomorrow)
+    record_json = getRecords(url, tomorrow, ALL_IMPACTS)
 
     cache["tomorrow"] = {"data": record_json, "last_update": datetime.now()}
     
-    return jsonify(record_json), 200
+    return _respond(record_json)
 
 if __name__ == '__main__':
     app.run(host=HOST, port=PORT, debug=DEBUG)

@@ -29,8 +29,10 @@ APP_ID = "forexfactory-bot"
 ZIP_DB = "forexbot.db"
 ZIP_ENV = "settings.env"
 ZIP_MANIFEST = "manifest.json"
-ZIP_BUILDS = "downloads/"                  # EA builds uploaded from the bot (not in git)
-BUILD_EXT = (".ex5", ".ex4")
+ZIP_BUILDS = "downloads/"                  # files uploaded to the site from the bot (EA builds, PDFs, ...)
+BUILD_EXT = (".ex5", ".ex4")             # kept for compatibility
+# never restore files the web server would run/render (same list as ea_admin)
+BLOCKED_EXT = (".html", ".htm", ".xhtml", ".svg", ".js", ".mjs", ".php", ".phtml", ".cgi", ".py", ".sh", ".htaccess")
 REQUIRED_TABLES = {"subscribers"}          # minimum for a backup to be considered valid
 MAX_RESTORE_BYTES = 20 * 1024 * 1024       # Telegram bot API download limit
 SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -162,11 +164,11 @@ def create_backup(label: str = "manual") -> Path:
 
 
 def _build_files() -> list[Path]:
-    """EA builds in the site's downloads folder (they're uploaded from the bot, not stored in git)."""
+    """Every file in the site's downloads folder (managed from /admin → Downloads)."""
     d = cfg.DOWNLOADS_DIR
     if not d.is_dir():
         return []
-    return sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() in BUILD_EXT)
+    return sorted(p for p in d.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
 def list_backups() -> list[Path]:
@@ -247,7 +249,7 @@ def prepare_restore(source: Path) -> RestorePlan:
                     fname = n[len(ZIP_BUILDS):]
                     # flat file names only (no folders / path tricks)
                     if not fname or "/" in fname or "\\" in fname or fname.startswith(".") \
-                            or Path(fname).suffix.lower() not in BUILD_EXT:
+                            or fname.lower().endswith(BLOCKED_EXT):
                         continue
                     if builds_dir is None:
                         builds_dir = workdir / "downloads"
@@ -268,7 +270,7 @@ def prepare_restore(source: Path) -> RestorePlan:
 def apply_restore(plan: RestorePlan, include_settings: bool = False) -> tuple[Path | None, bool]:
     """
     Restore the staged backup into the live DB (and optionally .env).
-    EA builds in the backup are copied back into the downloads folder (existing files are kept).
+    Download files in the backup are copied back into the downloads folder (existing files are kept).
     Returns (safety_backup_path, settings_changed).
     """
     safety = None

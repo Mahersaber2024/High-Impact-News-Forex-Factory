@@ -51,8 +51,23 @@ def getPageHTML(url):  # Gets URL and returns the source HTML
         print(f"ERROR: Failed to fetch {url}. Reason: {e}")
         return ""
 
-def getRecords(url, date_object):
-    """Process the page and return records of high-impact events with formatted date."""
+IMPACT_CLASSES = {"red": "High", "ora": "Medium", "yel": "Low", "gra": "Holiday"}
+ALL_IMPACTS = ("High", "Medium", "Low")
+
+def _impact_of(event) -> str:
+    """ForexFactory impact icon: icon--ff-impact-red / -ora / -yel / -gra."""
+    cell = event.find('td', class_='calendar__impact')
+    span = cell.find('span') if cell else event.find('span', class_=re.compile(r'icon--ff-impact-'))
+    for cls in (span.get('class', []) if span else []):
+        m = re.match(r'icon--ff-impact-(\w+)', cls)
+        if m:
+            return IMPACT_CLASSES.get(m.group(1), 'Unknown')
+    return 'Unknown'
+
+def getRecords(url, date_object, impacts=("High",)):
+    """Process the page and return records with formatted date.
+    impacts: which levels to keep (High / Medium / Low). Default High only, like before."""
+    impacts = set(impacts)
     all_records = []  # Store all event data here
     
     # Fetch and parse the HTML page
@@ -82,6 +97,7 @@ def getRecords(url, date_object):
                 # Parse with format "Tue Nov 12" (without comma)
                 parsed_date = datetime.strptime(f"{date_text} {current_date.year}", "%a %b %d %Y")
                 current_date = parsed_date
+                current_time = None   # new day: ForexFactory always prints the first time of a day
             except ValueError as e:
                 # Keep current_date if parsing fails
                 continue
@@ -92,8 +108,16 @@ def getRecords(url, date_object):
         # Find the time element and check if it exists
         time_cell = event.find('td', class_='calendar__time')
         time_text = time_cell.text.strip() if time_cell else ""
-        
-        # Skip only records with "Tentative" time
+
+        # ForexFactory leaves the time cell empty when an event has the same time as the row above
+        # (e.g. CAD Employment Change 8:30 + Unemployment Rate). Remember the last time seen this day
+        # and reuse it. This was never assigned before, so those events came out with no time.
+        if time_text:
+            current_time = time_text
+        elif current_time:
+            time_text = current_time
+
+        # Skip only records with "Tentative" time (also blank rows right under a Tentative one)
         if time_text.lower() == "tentative":
             continue
             
@@ -109,10 +133,6 @@ def getRecords(url, date_object):
         if curr == "N/A" and name == "N/A":
             continue
             
-        # Use current_time if time_text is empty
-        if not time_text and current_time:
-            time_text = current_time
-            
         # Previous, forecast, and actual values
         previous_cell = event.find('td', class_='calendar__previous')
         previous = previous_cell.text.strip() if previous_cell else 'unknown'
@@ -123,12 +143,11 @@ def getRecords(url, date_object):
         actual_cell = event.find('td', class_='calendar__actual')
         actual = actual_cell.text.strip() if actual_cell else 'unknown'
         
-        # Determine the impact level
-        impact_icon = event.find('span', class_='icon icon--ff-impact-red')
-        impact = 'High' if impact_icon else 'Low'
-        
+        # Impact level from the icon colour
+        impact = _impact_of(event)
+
         # Save the record only if it has valid data
-        if impact == 'High' and (curr != "N/A" or name != "N/A"):
+        if impact in impacts and (curr != "N/A" or name != "N/A"):
             record = {
                 'Date': formatted_date,
                 'Time': time_text,
