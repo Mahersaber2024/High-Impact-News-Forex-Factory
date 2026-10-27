@@ -35,6 +35,20 @@ if [ "$RUN_FLASK" = "true" ]; then
   read -p "Enter Flask port [default: 45869]: " FLASK_PORT
   FLASK_PORT=${FLASK_PORT:-45869}
 
+  # Port must be free (or already used by this project's own flask.service).
+  if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :$FLASK_PORT" 2>/dev/null | grep -q .; then
+    if ! grep -qs "^WorkingDirectory=$APP_DIR/\?$" /etc/systemd/system/flask.service; then
+      echo -e "${RED}Port $FLASK_PORT is already used by another program. Nothing was changed.${NC}"
+      echo "Re-run and choose a different Flask port (or free this one)."
+      exit 1
+    fi
+  fi
+  # flask.service is a generic name: refuse to overwrite a unit that belongs to another app.
+  if [ -f /etc/systemd/system/flask.service ] && ! grep -qs "^WorkingDirectory=$APP_DIR/\?$" /etc/systemd/system/flask.service; then
+    echo -e "${RED}/etc/systemd/system/flask.service already belongs to another application. Nothing was changed.${NC}"
+    exit 1
+  fi
+
   echo -e "${CYAN}The website (website/content) and the API are served together on one domain:${NC}"
   echo "  https://DOMAIN/            -> website"
   echo "  https://DOMAIN/api/forex/  -> API"
@@ -205,28 +219,98 @@ systemctl restart telegram-bot.service
 fi
 
 if [ "$RUN_FLASK" = "true" ]; then
+# ---------------------------------------------------------------
 # Website + API on one nginx site (template: website/nginx/site.conf.template)
+#
+# This block LAYERS on top of whatever nginx already serves (Jade, Terminal
+# Bot web terminal, other sites). It never edits nginx.conf, never deletes a
+# customised default site, never restarts a running nginx (reload only), and
+# if the new config does not pass `nginx -t` it rolls back to exactly what
+# was there before, so the running nginx is never left broken.
+# ---------------------------------------------------------------
 SITE_DIR="$APP_DIR/website/content"
-mkdir -p "$SITE_DIR/assets/downloads"
+SITE_AVAIL="/etc/nginx/sites-available/forexfactory-api"
+SITE_ENABLED="/etc/nginx/sites-enabled/forexfactory-api"
+RL_CONF="/etc/nginx/conf.d/forexfactory-ratelimit.conf"
+NGX_BACKUP="$(mktemp -d /tmp/ffx-nginx-backup.XXXXXX)"
+
+mkdir -p "$SITE_DIR/assets/downloads" /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d
 chmod 755 "$APP_DIR" "$APP_DIR/website" "$SITE_DIR"   # nginx (www-data) must reach the site folder
-cp "$APP_DIR/website/nginx/ratelimit.conf" /etc/nginx/conf.d/forexfactory-ratelimit.conf
-sed -e "s|__DOMAIN__|${DOMAIN_NAME:-_}|g" \
-    -e "s|__ROOT__|$SITE_DIR|g" \
-    -e "s|__FLASK_PORT__|$FLASK_PORT|g" \
-    "$APP_DIR/website/nginx/site.conf.template" > /etc/nginx/sites-available/forexfactory-api
 
-ln -sf /etc/nginx/sites-available/forexfactory-api /etc/nginx/sites-enabled/forexfactory-api
-rm -f /etc/nginx/sites-enabled/default
-nginx -t
-systemctl enable nginx
-systemctl restart nginx
-
-if [ -n "$DOMAIN_NAME" ]; then
-  apt install -y certbot python3-certbot-nginx
-  certbot --nginx --non-interactive --agree-tos -m "$CERTBOT_EMAIL" -d "$DOMAIN_NAME" --redirect || true
-fi
+# nginx must be healthy BEFORE we touch it; otherwise we could not tell who broke it.
+if ! nginx -t >/dev/null 2>&1; then
+  echo -e "${RED}The existing nginx configuration is already broken (nginx -t fails):${NC}"
+  nginx -t 2>&1 | sed 's/^/   /' || true
+  echo -e "${YELLOW}Forex website NOT installed (nginx left untouched). Fix nginx, then re-run this installer.${NC}"
+  NGINX_SKIPPED=true
+else
+  NGINX_SKIPPED=false
 fi
 
+# A different site already using this domain would make nginx ignore/shadow one of them.
+if [ "$NGINX_SKIPPED" = "false" ] && [ -n "$DOMAIN_NAME" ]; then
+  DUP="$(grep -rlE "server_name[^;]*[[:space:]]${DOMAIN_NAME}[[:space:];]" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | grep -v 'forexfactory-' | head -3 || true)"
+  if [ -n "$DUP" ]; then
+    echo -e "${RED}Domain $DOMAIN_NAME is already served by another nginx site:${NC}"
+    echo "$DUP" | sed 's/^/   /'
+    echo -e "${YELLOW}Forex website NOT installed. Use a different domain/subdomain.${NC}"
+    NGINX_SKIPPED=true
+  fi
+fi
+
+if [ "$NGINX_SKIPPED" = "false" ]; then
+  # Remember the previous state so we can roll back.
+  [ -f "$SITE_AVAIL" ] && cp -a "$SITE_AVAIL" "$NGX_BACKUP/site-available" || true
+  [ -f "$RL_CONF" ]    && cp -a "$RL_CONF"    "$NGX_BACKUP/ratelimit.conf" || true
+  [ -L "$SITE_ENABLED" ] && touch "$NGX_BACKUP/was-enabled" || true
+
+  cp "$APP_DIR/website/nginx/ratelimit.conf" "$RL_CONF"
+  sed -e "s|__DOMAIN__|${DOMAIN_NAME:-_}|g" \
+      -e "s|__ROOT__|$SITE_DIR|g" \
+      -e "s|__FLASK_PORT__|$FLASK_PORT|g" \
+      "$APP_DIR/website/nginx/site.conf.template" > "$SITE_AVAIL"
+  ln -sf "$SITE_AVAIL" "$SITE_ENABLED"
+
+  # Only the untouched stock "Welcome to nginx" page is removed, and only when the
+  # site runs without a domain (otherwise it would catch IP requests meant for us).
+  # A customised default site is never deleted.
+  if [ -z "$DOMAIN_NAME" ] && [ -L /etc/nginx/sites-enabled/default ] \
+     && grep -q "Welcome to nginx" /etc/nginx/sites-available/default 2>/dev/null; then
+    rm -f /etc/nginx/sites-enabled/default
+    touch "$NGX_BACKUP/default-removed"
+    echo -e "${YELLOW}Removed the stock nginx 'default' site (IP access now shows the Forex site).${NC}"
+  fi
+
+  if nginx -t; then
+    systemctl enable nginx >/dev/null 2>&1 || true
+    if systemctl is-active --quiet nginx; then
+      systemctl reload nginx          # reload keeps the other sites' connections alive
+    else
+      systemctl start nginx
+    fi
+    echo -e "${GREEN}✓ nginx: Forex site added (existing sites untouched).${NC}"
+  else
+    echo -e "${RED}nginx -t failed with the Forex config - rolling back to the previous nginx state.${NC}"
+    rm -f "$SITE_ENABLED"
+    if [ -f "$NGX_BACKUP/site-available" ]; then cp -a "$NGX_BACKUP/site-available" "$SITE_AVAIL"; else rm -f "$SITE_AVAIL"; fi
+    if [ -f "$NGX_BACKUP/ratelimit.conf" ]; then cp -a "$NGX_BACKUP/ratelimit.conf" "$RL_CONF"; else rm -f "$RL_CONF"; fi
+    [ -f "$NGX_BACKUP/was-enabled" ] && ln -sf "$SITE_AVAIL" "$SITE_ENABLED" || true
+    [ -f "$NGX_BACKUP/default-removed" ] && ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default || true
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+    echo -e "${YELLOW}Flask API and bot are running; only the website part was skipped.${NC}"
+    NGINX_SKIPPED=true
+  fi
+
+  # HTTPS: certbot --nginx edits only OUR server block. Skipped if nginx part failed.
+  if [ "$NGINX_SKIPPED" = "false" ] && [ -n "$DOMAIN_NAME" ]; then
+    apt install -y certbot python3-certbot-nginx
+    certbot --nginx --non-interactive --agree-tos -m "$CERTBOT_EMAIL" -d "$DOMAIN_NAME" --redirect \
+      || echo -e "${YELLOW}certbot failed (DNS not pointing here yet?). Re-run later: certbot --nginx -d $DOMAIN_NAME --redirect${NC}"
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+  fi
+fi
+rm -rf "$NGX_BACKUP"
+fi
 
 # ============================================
 # بخش جدید: نمایش وضعیت و آموزش مدیریت سرویس

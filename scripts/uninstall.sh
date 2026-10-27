@@ -132,8 +132,13 @@ rm -f /etc/nginx/conf.d/forexfactory-ratelimit.conf
 
 # 5. ری‌استارت Nginx (در صورت نصب بودن)
 if command -v nginx &> /dev/null; then
-    nginx -t 2>/dev/null && systemctl restart nginx || echo -e "${YELLOW}⚠ Nginx configuration test failed, skipping restart${NC}"
-    echo -e "${GREEN}✓ Nginx restarted${NC}"
+    # reload (not restart): other sites on this nginx (Jade / Terminal Bot web terminal) keep their connections
+    if nginx -t 2>/dev/null; then
+        systemctl is-active --quiet nginx && systemctl reload nginx || true
+        echo -e "${GREEN}✓ Nginx reloaded${NC}"
+    else
+        echo -e "${YELLOW}⚠ Nginx configuration test failed, skipping reload${NC}"
+    fi
 fi
 
 # 6. حذف SSL Certificate (در صورت وجود)
