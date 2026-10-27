@@ -56,6 +56,12 @@ Installed to `/opt/forexfactory-api`. `Dockerfile` and `envshowrun` were removed
 bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory/main/scripts/install.sh)
 ```
 
+## Manager (status / conflict check / install / update / uninstall)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/High-Impact-News-Forex-Factory/main/manager.sh)
+```
+
 ## Installer Prompts
 
 The installer supports three modes:
