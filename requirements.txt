@@ -16,3 +16,6 @@ pandas~=2.2.2
 # Web
 Flask~=3.0.3
 
+# Calendar graphics
+Pillow>=10.0
+

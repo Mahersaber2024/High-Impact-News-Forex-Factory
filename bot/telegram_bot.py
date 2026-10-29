@@ -20,6 +20,7 @@ from bot import backup_manager as bk
 from bot import ea_admin
 from bot import channels
 from bot import reminders
+from bot import news_card
 from telegram.error import Forbidden, BadRequest
 
 from datetime import datetime
@@ -33,6 +34,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     BotCommand,
     MenuButtonCommands,
+    InputMediaPhoto,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -182,6 +184,11 @@ def ensure_db():
                url  TEXT NOT NULL
         );"""
     )
+    cur.execute("""CREATE TABLE IF NOT EXISTS news_alerts (
+        chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS news_alert_sent (
+        chat_id INTEGER NOT NULL, event_key TEXT NOT NULL, sent_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, event_key))""")
 
     conn.commit()
     conn.close()
@@ -460,7 +467,10 @@ UI = {
 async def safe_edit(message, text: str, kb: InlineKeyboardMarkup | None = None):
     """edit_text that ignores Telegram's 'message is not modified' (tapping the selected option)."""
     try:
-        await message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        if message.photo:
+            await message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     except BadRequest as e:
         if "not modified" not in str(e).lower():
             raise
@@ -529,6 +539,9 @@ def kb_updated_text(language: str, cid: int) -> str:
 async def keyboard_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Runs AFTER every handler (group 1): if the user's keyboard is older than KB_VERSION
     (or in the other language), send it once with a short note. Telegram can only set this keyboard with a message."""
+    # A date/alert button must never trigger an extra keyboard-update message.
+    if update.callback_query:
+        return
     chat = update.effective_chat
     if chat is None or chat.type != "private":
         return
@@ -557,8 +570,7 @@ async def menu_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE
     if language is None:   # never picked a language: same as /start
         await start(update, context)
         return
-    await update.message.reply_text(main_menu_text(language, cid), reply_markup=main_menu_keyboard(language, cid),
-                                    parse_mode=ParseMode.HTML)
+    await send_news_menu(update.message, language, cid)
 
 def main_menu_text(language: str, cid: int, back: bool = False) -> str:
     t = UI[language]
@@ -573,10 +585,12 @@ def main_menu_keyboard(language: str = 'en', cid: int | None = None) -> InlineKe
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(t['currencies'], callback_data="choose_currencies")],
         [
+            InlineKeyboardButton("📅 دیروز" if language == 'fa' else "📅 Yesterday", callback_data="yesterday"),
             InlineKeyboardButton(t['today'], callback_data="today"),
             InlineKeyboardButton(t['tomorrow'], callback_data="tomorrow"),
             InlineKeyboardButton(t['week'], callback_data="week"),
         ],
+        [InlineKeyboardButton(alert_label(language, cid), callback_data="newsalert_main")],
         # One button for the whole Daily High-Impact News: shows its state, opens the panel
         [InlineKeyboardButton(t['brief_btn_on'].format(time=time_) if on else t['brief_btn_off'],
                               callback_data="brief")],
@@ -950,9 +964,9 @@ def get_filtered_events(endpoint: str, allowed_currencies: list[str],
         data = fill_missing_times(response.json())
         return [ev for ev in data
                 if ev.get("Currency") in allowed_currencies and ev.get("Impact", "High") in impacts]
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
         logger.error(f"Error fetching data from {API_BASE}/{endpoint}: {e}")
-        return []
+        raise
 
 def group_by_currency(events: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
@@ -1048,6 +1062,224 @@ def split_message(text: str, limit: int = TG_LIMIT) -> list[str]:
     if cur:
         parts.append(cur)
     return parts
+
+# The interactive news view edits one Telegram photo in place. Old text menus
+# remain usable as text because Telegram cannot convert a text message to media.
+def alert_on(cid):
+    with closing(_db()) as conn:
+        row = conn.execute("SELECT enabled FROM news_alerts WHERE chat_id=?", (cid,)).fetchone()
+    return bool(row and row[0])
+
+def alert_label(language, cid):
+    on = alert_on(cid) if cid is not None else False
+    if language == "fa":
+        return "🔔 هشدار ۳۰ دقیقه قبل: " + ("روشن 🟢" if on else "خاموش ⚪️")
+    return "🔔 30-minute alert: " + ("ON 🟢" if on else "OFF ⚪️")
+
+def toggle_news_alert(cid):
+    enabled = not alert_on(cid)
+    with closing(_db()) as conn, conn:
+        conn.execute("INSERT INTO news_alerts(chat_id,enabled) VALUES (?,?) "
+                     "ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled", (cid, int(enabled)))
+    return enabled
+
+def period_title(period, language):
+    titles = {
+        "fa": {"yesterday": "اخبار اقتصادی دیروز", "today": "اخبار اقتصادی امروز",
+               "tomorrow": "اخبار اقتصادی فردا", "week": "اخبار اقتصادی هفته"},
+        "en": {"yesterday": "Yesterday's calendar", "today": "Today's calendar",
+               "tomorrow": "Tomorrow's calendar", "week": "This week's calendar"},
+    }
+    return titles[language][period]
+
+def period_date(period, language):
+    day = ny_today()
+    if period == "yesterday":
+        day -= dt.timedelta(days=1)
+    elif period == "tomorrow":
+        day += dt.timedelta(days=1)
+    elif period == "week":
+        day -= dt.timedelta(days=day.weekday())
+    return date_display(day, language, period == "week")
+
+def date_display(day, language, is_week=False):
+    end = day + dt.timedelta(days=6) if is_week else None
+    if language == "fa":
+        jalali = jalali_str(day, "fa")
+        gregorian = gregorian_str(day, "fa")
+        if end:
+            jalali += " تا " + jalali_str(end, "fa")
+            gregorian += " تا " + gregorian_str(end, "fa")
+        return f"شمسی: {jalali}\nمیلادی: {gregorian}"
+    result = gregorian_str(day, "en")
+    return result + (" to " + gregorian_str(end, "en") if end else "")
+
+def empty_news_lines(period, language, currencies, impacts):
+    names = [news_card.country_code(code) for code in currencies]
+    if language == "fa":
+        days = {"yesterday": "دیروز", "today": "امروز", "tomorrow": "فردا", "week": "این هفته"}
+        category = "خبر مهمی" if set(impacts) == {"High"} else (
+            "خبر اقتصادی" if set(impacts) == {"High", "Medium", "Low"}
+            else "خبر اقتصادی با درجه اهمیت انتخابی")
+        return [f"{days[period]} {category} برای", "، ".join(names), "ثبت نشده است."]
+    days = {"yesterday": "Yesterday", "today": "Today", "tomorrow": "Tomorrow", "week": "This week"}
+    category = "high-impact events" if set(impacts) == {"High"} else (
+        "economic events" if set(impacts) == {"High", "Medium", "Low"}
+        else "events at your selected impact levels")
+    return [f"{days[period]}: no {category} for", ", ".join(names) + "."]
+
+def caption_with_news(title, date, events, language):
+    """At most eight rows: stay below Telegram's 1024-character caption limit."""
+    lines = [f"📅 {title}", date, "⏰ نیویورک" if language == "fa" else "⏰ New York",
+             "", "🔴 خبرهای مهم:" if language == "fa" else "🔴 High-impact news:"]
+    high = [ev for ev in events if ev.get("Impact") == "High"]
+    if not high:
+        lines.append("در این صفحه خبر مهمی نیست." if language == "fa" else "No high-impact events on this page.")
+    for ev in high:
+        name = " ".join(str(ev.get("Event") or "—").split())
+        if len(name) > 65:
+            name = name[:64] + "…"
+        time = " ".join(str(ev.get("Time") or "—").split())[:12]
+        lines.append(f"🔴 {news_card.country_code(ev.get('Currency'))} | {time} | {name}")
+    lines += ["", "@ForexFactoryN_Bot"]
+    return "\n".join(lines)
+
+def news_keyboard(language, cid, period, page, pages):
+    labels = ([("دیروز", "yesterday"), ("امروز", "today"), ("فردا", "tomorrow"), ("هفته", "week")]
+              if language == "fa" else
+              [("Yesterday", "yesterday"), ("Today", "today"), ("Tomorrow", "tomorrow"), ("Week", "week")])
+    rows = [[InlineKeyboardButton(("✓ " if key == period else "") + label, callback_data=f"news_{key}_0")
+             for label, key in labels]]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"news_{period}_{page-1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"news_{period}_{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(alert_label(language, cid), callback_data=f"newsalert_{period}_{page}")])
+    rows.append([InlineKeyboardButton("🏠 منو" if language == "fa" else "🏠 Menu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(rows)
+
+async def send_news_menu(message, language, cid, keyboard=None, text=None):
+    card = await asyncio.to_thread(news_card.render_card,
+        "تقویم اقتصادی" if language == "fa" else "Economic Calendar",
+        period_date("today", language), [], language, 0, 0, True)
+    await message.reply_photo(photo=card, caption=text or main_menu_text(language, cid),
+                              reply_markup=keyboard or main_menu_keyboard(language, cid), parse_mode=ParseMode.HTML)
+
+async def show_news_view(q, cid, language, period, page):
+    endpoint = "weekly" if period == "week" else period
+    try:
+        currencies, impacts = get_user_currencies(cid), get_user_impacts(cid)
+        events = await asyncio.to_thread(get_filtered_events, endpoint, currencies, impacts)
+        pages = max(1, (len(events) + news_card.PER_PAGE - 1) // news_card.PER_PAGE)
+        page = max(0, min(page, pages-1))
+        part = events[page*news_card.PER_PAGE:(page+1)*news_card.PER_PAGE]
+        title = period_title(period, language)
+        date = period_date(period, language)
+        empty_lines = empty_news_lines(period, language, currencies, impacts) if not events else None
+        caption = html.escape(caption_with_news(title, date, part, language) if part else
+                              f"📅 {title}\n{date}\n\n{' '.join(empty_lines)}")
+        kb = news_keyboard(language, cid, period, page, pages)
+        if q.message.photo:
+            image = await asyncio.to_thread(news_card.render_card, title, date, part, language, page, len(events),
+                                            False, empty_lines)
+            await q.message.edit_media(media=InputMediaPhoto(media=image, caption=caption, parse_mode=ParseMode.HTML),
+                                       reply_markup=kb)
+        else:
+            lines = [caption, ""]
+            for ev in part:
+                lines.append(f"{IMPACT_DOT.get(ev.get('Impact'), '⚪️')} "
+                             f"{html.escape(str(ev.get('Time') or '—'))} "
+                             f"{html.escape(news_card.country_code(ev.get('Currency')))} | "
+                             f"{html.escape(str(ev.get('Event') or '—'))}")
+            if not part:
+                lines.append(html.escape(" ".join(empty_lines)))
+            await safe_edit(q.message, "\n".join(lines), kb)
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
+    except Exception:
+        logger.exception("Calendar view failed for %s", cid)
+        await safe_edit(q.message, "⚠️ دریافت تقویم ناموفق بود. دوباره تلاش کن." if language == "fa"
+                        else "⚠️ Calendar unavailable. Please try again.",
+                        news_keyboard(language, cid, period, 0, 1))
+
+def event_datetime(ev, now):
+    """Source timestamps are New York time. Infer year closest to today, including New Year."""
+    try:
+        raw_date = str(ev["Date"])
+        candidates = []
+        for year in (now.year - 1, now.year, now.year + 1):
+            try:
+                candidates.append(datetime.strptime(f"{raw_date} {year}", "%a, %b %d %Y").date())
+            except ValueError:
+                continue
+        if not candidates:
+            return None
+        day = min(candidates, key=lambda d: abs((d - now.date()).days))
+        value = str(ev["Time"]).strip().upper().replace(" ", "")
+        time_part = None
+        for fmt in ("%I:%M%p", "%I%p", "%H:%M"):
+            try:
+                time_part = datetime.strptime(value, fmt).time()
+                break
+            except ValueError:
+                continue
+        if time_part is None:
+            return None
+        return NY_TZ.localize(datetime.combine(day, time_part), is_dst=None)
+    except (KeyError, ValueError, pytz.AmbiguousTimeError, pytz.NonExistentTimeError):
+        return None
+
+async def news_alert_loop(context):
+    now = datetime.now(NY_TZ)
+    with closing(_db()) as conn:
+        users = [row[0] for row in conn.execute("SELECT chat_id FROM news_alerts WHERE enabled=1")]
+    if not users:
+        return
+    try:
+        all_currencies = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "CNY"]
+        today_events = await asyncio.to_thread(get_filtered_events, "today", all_currencies, ["High"])
+        tomorrow_events = await asyncio.to_thread(get_filtered_events, "tomorrow", all_currencies, ["High"])
+    except Exception:
+        logger.exception("Could not fetch high-impact alerts")
+        return
+    for cid in users:
+        language = get_user_language(cid)
+        allowed = get_user_currencies(cid)
+        for ev in today_events + tomorrow_events:
+            event_at = event_datetime(ev, now)
+            if ev.get("Currency") not in allowed or not event_at:
+                continue
+            seconds = (event_at - now).total_seconds()
+            if not 1770 <= seconds <= 1830:
+                continue
+            key = "|".join([event_at.isoformat(), str(ev.get("Currency")), str(ev.get("Event"))])
+            with closing(_db()) as conn:
+                if conn.execute("SELECT 1 FROM news_alert_sent WHERE chat_id=? AND event_key=?", (cid, key)).fetchone():
+                    continue
+            try:
+                title = "هشدار خبر مهم | ۳۰ دقیقه مانده" if language == "fa" else "High-impact alert | 30 minutes"
+                date = date_display(event_at.date(), language)
+                card = await asyncio.to_thread(news_card.render_card, title, date, [ev], language)
+                caption = caption_with_news(title, date, [ev], language)
+                ch = channels.get_channel(cid)
+                target = ch["id"] if ch else cid
+                try:
+                    await context.bot.send_photo(target, photo=card, caption=caption)
+                except (Forbidden, BadRequest):
+                    if not ch:
+                        raise
+                    await channels.notify_failed(context, cid, language, ch)
+                    card.seek(0)
+                    await context.bot.send_photo(cid, photo=card, caption=caption)
+                with closing(_db()) as conn, conn:
+                    conn.execute("INSERT OR IGNORE INTO news_alert_sent VALUES (?,?,?)",
+                                 (cid, key, datetime.now(dt.timezone.utc).isoformat()))
+            except Exception:
+                logger.exception("News alert delivery failed for %s", cid)
 
 async def fetch_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, endpoint: str, title: str):
     await send_typing(context, update.effective_chat.id)
@@ -1627,14 +1859,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🗣 English", callback_data="setlang_en")
             ]
         ])
-        await update.message.reply_text(
-            "Please select your language:\nلطفاً زبان خود را انتخاب کنید:",
-            reply_markup=keyboard
-        )
+        await send_news_menu(update.message, "fa", cid, keyboard,
+                             "Please select your language:\nلطفاً زبان خود را انتخاب کنید:")
         return
 
-    await update.message.reply_text(main_menu_text(language, cid), reply_markup=main_menu_keyboard(language, cid),
-                                    parse_mode=ParseMode.HTML)
+    await send_news_menu(update.message, language, cid)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_typing(context, update.effective_chat.id)
@@ -1742,45 +1971,77 @@ async def digest_loop(context: ContextTypes.DEFAULT_TYPE):
         try:
             language = get_user_language(cid)
             allowed = get_user_currencies(cid)
-            events = await asyncio.to_thread(get_filtered_events, "today", allowed, get_user_impacts(cid))
-            grouped_events = group_by_currency(events)
-            messages = {
-                'fa': {
-                    'no_news': "😴 امروز خبری نیست.",
-                    'title': "{cur} — 📅 خبرهای امروز"
-                },
-                'en': {
-                    'no_news': "😴 No news today.",
-                    'title': "{cur} — 📅 Today's News"
-                }
-            }
-            if grouped_events:
-                texts = [format_message_clean(messages[language]['title'].format(cur=cur), ev_list, language)
-                         for cur, ev_list in grouped_events.items()]
-            else:
-                texts = [messages[language]['no_news']]
-
-            # Send to the user's own channel if connected, otherwise to the private chat
+            impacts = get_user_impacts(cid)
+            events = await asyncio.to_thread(get_filtered_events, "today", allowed, impacts)
             ch = channels.get_channel(cid)
             target = ch["id"] if ch else cid
-            texts = [part for text in texts for part in split_message(text)]
-            for i, text in enumerate(texts):
-                kb = menu_kb(language, cid) if (target == cid and i == len(texts) - 1) else None
+            title = period_title("today", language)
+            date = period_date("today", language)
+            if not events:
+                empty_lines = empty_news_lines("today", language, allowed, impacts)
+                text = f"📅 {title}\n{date}\n\n{' '.join(empty_lines)}\n\n@ForexFactoryN_Bot"
                 try:
-                    await context.bot.send_message(target, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+                    await context.bot.send_message(target, text)
+                except (Forbidden, BadRequest) as e:
+                    if not ch:
+                        raise
+                    logger.warning(f"Channel {ch['id']} of {cid} failed: {e}; falling back to private chat")
+                    await channels.notify_failed(context, cid, language, ch)
+                    await context.bot.send_message(cid, text)
+                continue
+            pages = max(1, (len(events) + news_card.PER_PAGE - 1) // news_card.PER_PAGE)
+            for i in range(pages):
+                part = events[i*news_card.PER_PAGE:(i+1)*news_card.PER_PAGE]
+                image = await asyncio.to_thread(news_card.render_card, title, date, part, language, i, len(events))
+                text = caption_with_news(title, date, part, language)
+                try:
+                    await context.bot.send_photo(target, photo=image, caption=text)
                 except (Forbidden, BadRequest) as e:
                     if not ch:
                         raise
                     logger.warning(f"Channel {ch['id']} of {cid} failed: {e}; falling back to private chat")
                     await channels.notify_failed(context, cid, language, ch)
                     ch, target = None, cid
-                    await context.bot.send_message(target, text, parse_mode=ParseMode.HTML)
+                    image.seek(0)
+                    await context.bot.send_photo(target, photo=image, caption=text)
         except Exception as e:
             logger.warning(f"Digest for {cid} failed: {e}")
         
 async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data
+    if data == "newsalert_main":
+        cid = q.message.chat.id
+        language = get_user_language(cid)
+        toggle_news_alert(cid)
+        await q.answer("✅" if alert_on(cid) else "🔕")
+        await safe_edit(q.message, main_menu_text(language, cid), main_menu_keyboard(language, cid))
+        return
+    if data.startswith("newsalert_"):
+        cid = q.message.chat.id
+        language = get_user_language(cid)
+        pieces = data.split("_")
+        if len(pieces) != 3 or pieces[1] not in ("yesterday", "today", "tomorrow", "week"):
+            await q.answer()
+            return
+        toggle_news_alert(cid)
+        await q.answer("✅" if alert_on(cid) else "🔕")
+        await show_news_view(q, cid, language, pieces[1], int(pieces[2]))
+        return
+    if data in ("yesterday", "today", "tomorrow", "week") or data.startswith("news_"):
+        cid = q.message.chat.id
+        language = get_user_language(cid)
+        if data.startswith("news_"):
+            pieces = data.split("_")
+            if len(pieces) != 3 or pieces[1] not in ("yesterday", "today", "tomorrow", "week") or not pieces[2].isdigit():
+                await q.answer()
+                return
+            period, page = pieces[1], int(pieces[2])
+        else:
+            period, page = data, 0
+        await q.answer()
+        await show_news_view(q, cid, language, period, page)
+        return
     if data.startswith("setlang_"):
         await set_language(update, context)
         return
@@ -1796,7 +2057,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🗣 English", callback_data="setlang_en")
             ]
         ])
-        await q.message.edit_text(messages[language], reply_markup=keyboard)
+        await safe_edit(q.message, messages[language], keyboard)
         await q.answer()
         return
     if data == "choose_currencies":
@@ -2038,6 +2299,9 @@ async def toggle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     currency = q.data.split("_")[1]
     selected = get_user_currencies(cid)
     if currency in selected:
+        if len(selected) == 1:
+            await q.answer("حداقل یک ارز باید انتخاب باشد" if language == 'fa' else "Keep at least one currency")
+            return
         selected.remove(currency)
     else:
         selected.append(currency)
@@ -2150,6 +2414,7 @@ def main():
     app.job_queue.run_repeating(digest_loop, interval=60, first=0)
     app.job_queue.run_repeating(date_loop, interval=30, first=0)   # 30s + last_sent: never misses / never doubles
     app.job_queue.run_repeating(reminders_tick, interval=30, first=5)   # ⏰ due reminders
+    app.job_queue.run_repeating(news_alert_loop, interval=30, first=10)
     print("🥵 bot is online!")
     app.run_polling()
 

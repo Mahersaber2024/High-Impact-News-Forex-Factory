@@ -496,8 +496,7 @@ cmd_fix_renewal(){
 # Menu
 # ---------------------------------------------------------------
 pick_project(){
-  # menu goes to stderr: this function is called inside $(...), so stdout is captured
-  { echo "  1) JadeTunnel sales"; echo "  2) Terminal Bot"; echo "  3) ForexFactory API + Bot"; } >&2
+  echo "  1) JadeTunnel sales"; echo "  2) Terminal Bot"; echo "  3) ForexFactory API + Bot"
   read -rp "Project [1-3]: " n
   case "$n" in 1) echo jade;; 2) echo term;; 3) echo forex;; *) echo "";; esac
 }

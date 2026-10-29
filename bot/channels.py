@@ -105,6 +105,12 @@ T = {
     },
 }
 
+async def _edit(message, text, reply_markup=None):
+    if message.photo:
+        await message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    else:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+
 
 def _t(lang: str) -> dict:
     return T.get(lang, T["en"])
@@ -126,7 +132,7 @@ async def show(update: Update, ctx: ContextTypes.DEFAULT_TYPE, language: str):
         rows = [[B(t["cancel"], callback_data="currencies_done")]]
     ctx.user_data["awaiting"] = AWAIT_CHANNEL
     await q.answer()
-    await q.message.edit_text(text, reply_markup=KB(rows), parse_mode=ParseMode.HTML)
+    await _edit(q.message, text, reply_markup=KB(rows))
 
 
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, language: str):
@@ -136,14 +142,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE, language: 
         remove_channel(q.message.chat.id)
         ctx.user_data.pop("awaiting", None)
         await q.answer()
-        await q.message.edit_text(t["removed"], parse_mode=ParseMode.HTML)
+        await _edit(q.message, t["removed"])
         return
     # chan_change
     ctx.user_data["awaiting"] = AWAIT_CHANNEL
     await q.answer()
-    await q.message.edit_text(t["intro"].format(bot=_bot_name(ctx)),
-                              reply_markup=KB([[B(t["cancel"], callback_data="currencies_done")]]),
-                              parse_mode=ParseMode.HTML)
+    await _edit(q.message, t["intro"].format(bot=_bot_name(ctx)),
+                reply_markup=KB([[B(t["cancel"], callback_data="currencies_done")]]))
 
 
 def _channel_ref(msg) -> int | str | None:

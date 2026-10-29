@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import re
 import pandas as pd
+import pytz
 
 # Define month names and their corresponding numbers
 month_names = {
@@ -35,7 +36,7 @@ def getPageHTML(url):  # Gets URL and returns the source HTML
     scraper = cloudscraper.create_scraper()
     cookies = {
         'fftimezone': 'America%2FNew_York',   # Set the timezone to New York
-        'fftimezoneoffset': '-5',             # Set the timezone offset from GMT
+        'fftimezoneoffset': str(int(datetime.now(pytz.timezone("America/New_York")).utcoffset().total_seconds() / 3600)),
         'fftimeformat': '1'                   # Set the time format to 24-hour
     }
     
@@ -46,10 +47,10 @@ def getPageHTML(url):  # Gets URL and returns the source HTML
         return response.text
     except requests.exceptions.Timeout:
         print(f"ERROR: Request to {url} timed out after 15 seconds.")
-        return ""  # Return empty string so BeautifulSoup handles it gracefully
+        raise
     except requests.exceptions.RequestException as e:
         print(f"ERROR: Failed to fetch {url}. Reason: {e}")
-        return ""
+        raise
 
 IMPACT_CLASSES = {"red": "High", "ora": "Medium", "yel": "Low", "gra": "Holiday"}
 ALL_IMPACTS = ("High", "Medium", "Low")
@@ -78,7 +79,7 @@ def getRecords(url, date_object, impacts=("High",)):
     table = soup.find('table', class_='calendar__table')
     
     if not table:
-        return all_records
+        raise RuntimeError("Forex Factory calendar table not found")
         
     events = table.find_all('tr', class_='calendar__row')
     current_date = date_object  # Default date
@@ -95,8 +96,16 @@ def getRecords(url, date_object, impacts=("High",)):
                 # Clean the date text (remove extra spaces or characters)
                 date_text = re.sub(r'\s+', ' ', date_text).strip()
                 # Parse with format "Tue Nov 12" (without comma)
-                parsed_date = datetime.strptime(f"{date_text} {current_date.year}", "%a %b %d %Y")
-                current_date = parsed_date
+                # Infer the closest year to the requested day, including Dec/Jan weeks.
+                candidates = []
+                for year in (date_object.year - 1, date_object.year, date_object.year + 1):
+                    try:
+                        candidates.append(datetime.strptime(f"{date_text} {year}", "%a %b %d %Y"))
+                    except ValueError:
+                        continue
+                if not candidates:
+                    continue
+                current_date = min(candidates, key=lambda d: abs((d.date() - date_object.date()).days))
                 current_time = None   # new day: ForexFactory always prints the first time of a day
             except ValueError as e:
                 # Keep current_date if parsing fails
